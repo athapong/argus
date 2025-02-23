@@ -515,7 +515,7 @@ def analyze_code_quality(*,
             if "error" in result:
                 return {"status": "error", "error": result["error"]}
             
-            summary = mcp.generate(analyze_pmd_violations(result["raw_output"]))
+            summary = analyze_pmd_violations(result["raw_output"])
             return {
                 "status": "success",
                 "summary": summary
