@@ -23,11 +23,13 @@ class GitLabCredentials(BaseModel):
 class AnalyzeRepositoryInput(BaseModel):
     repo_url: str
     gitlab_credentials: Optional[GitLabCredentials] = None
+    branch: Optional[str] = None
 
 class InspectFilesInput(BaseModel):
     repo_url: str
     file_paths: List[str]
     gitlab_credentials: Optional[GitLabCredentials] = None
+    branch: Optional[str] = None
 
 class EnumerateBranchesInput(BaseModel):
     repo_url: str
@@ -45,11 +47,13 @@ class SecurityScanInput(BaseModel):
     repo_url: str
     gitlab_credentials: Optional[GitLabCredentials] = None
     scan_type: Optional[str] = "trivy"  # Only trivy option remains
+    branch: Optional[str] = None
 
 class CodeQualityInput(BaseModel):
     repo_url: str
     language: str  # "go" or "java"
     gitlab_credentials: Optional[GitLabCredentials] = None
+    branch: Optional[str] = None
 
 mcp = FastMCP(
     "Repository Tools",
@@ -77,20 +81,23 @@ def get_authenticated_url(repo_url: str, gitlab_credentials: Optional[GitLabCred
     
     return repo_url
 
-def clone_repo(repo_url: str, gitlab_credentials: Optional[GitLabCredentials] = None) -> str:
+def clone_repo(repo_url: str, gitlab_credentials: Optional[GitLabCredentials] = None, branch: Optional[str] = None) -> str:
     """Clone or retrieve an existing repository from cache and return its path."""
-    # Generate cache directory name based on both URL and credentials
-    cache_key = f"{repo_url}:{gitlab_credentials.api_key if gitlab_credentials else ''}"
+    # Generate cache directory name based on URL, credentials and branch
+    cache_key = f"{repo_url}:{gitlab_credentials.api_key if gitlab_credentials else ''}:{branch or 'default'}"
     repo_hash = hashlib.sha256(cache_key.encode()).hexdigest()[:12]
     temp_dir = os.path.join(tempfile.gettempdir(), f"repo_cache_{repo_hash}")
     
     authenticated_url = get_authenticated_url(repo_url, gitlab_credentials)
     
-    # If directory exists and is a valid git repo, return it
+    # If directory exists and is a valid git repo, fetch updates
     if os.path.exists(temp_dir):
         try:
             repo = Repo(temp_dir)
             if not repo.bare and repo.remote().url == authenticated_url:
+                repo.remote().fetch()
+                if branch:
+                    repo.git.checkout(branch)
                 return temp_dir
             # If URLs don't match, clean up and re-clone
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -100,7 +107,10 @@ def clone_repo(repo_url: str, gitlab_credentials: Optional[GitLabCredentials] = 
     # Create directory and clone repository
     os.makedirs(temp_dir, exist_ok=True)
     try:
-        Repo.clone_from(authenticated_url, temp_dir)
+        if branch:
+            Repo.clone_from(authenticated_url, temp_dir, branch=branch)
+        else:
+            Repo.clone_from(authenticated_url, temp_dir)
         return temp_dir
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -307,31 +317,32 @@ def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
         return {"error": f"Failed to run PMD: {str(e)}"}
 
 @mcp.tool()
-def analyze_repository_structure(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> str:
+def analyze_repository_structure(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None, branch: Optional[str] = None) -> str:
     """
     Generate a tree representation of a repository's file structure.
     
     Args:
         repo_url: Repository URL to analyze
         gitlab_credentials: Optional GitLab token string or credentials dict
+        branch: Optional branch name to clone
     """
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
-        repo_path = clone_repo(repo_url, creds)
+        repo_path = clone_repo(repo_url, creds, branch)
         tree = get_directory_tree(repo_path)
         return tree
     except Exception as e:
         return f"Repository analysis failed: {str(e)}"
 
 @mcp.tool()
-def inspect_repository_files(*, repo_url: str, file_paths: List[str], gitlab_credentials: Optional[Union[str, dict]] = None) -> dict[str, str]:
+def inspect_repository_files(*, repo_url: str, file_paths: List[str], gitlab_credentials: Optional[Union[str, dict]] = None, branch: Optional[str] = None) -> dict[str, str]:
     """Extract and return contents of specified repository files."""
     # Log the input arguments
     print(f"inspect_repository_files called with repo_url={repo_url}, file_paths={file_paths}, gitlab_credentials={gitlab_credentials}")
     
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
-        repo_path = clone_repo(repo_url, creds)
+        repo_path = clone_repo(repo_url, creds, branch)
         results = {}
         
         for file_path in file_paths:
@@ -412,7 +423,7 @@ def get_commit_history(*,
     """
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
-        repo_path = clone_repo(repo_url, creds)
+        repo_path = clone_repo(repo_url, creds, branch)
         repo = Repo(repo_path)
         
         if (branch):
@@ -436,7 +447,8 @@ def get_commit_history(*,
 def security_scan_repository(*, 
     repo_url: str,
     scan_type: str = "trivy",
-    gitlab_credentials: Optional[Union[str, dict]] = None
+    gitlab_credentials: Optional[Union[str, dict]] = None,
+    branch: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Perform security scanning on a repository using Trivy.
@@ -445,13 +457,14 @@ def security_scan_repository(*,
         repo_url: Repository URL to scan
         scan_type: Type of scan to perform (only "trivy" supported)
         gitlab_credentials: Optional GitLab credentials
+        branch: Optional branch name to clone
         
     Returns:
         Dictionary containing scan results or errors
     """
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
-        repo_path = clone_repo(repo_url, creds)
+        repo_path = clone_repo(repo_url, creds, branch)
         
         if scan_type != "trivy":
             return {"error": "Only Trivy scanning is supported"}
@@ -503,7 +516,8 @@ def fetch_all_branches(*, repo_url: str, gitlab_credentials: Optional[Union[str,
 def analyze_code_quality(*, 
     repo_url: str,
     language: str,
-    gitlab_credentials: Optional[Union[str, dict]] = None
+    gitlab_credentials: Optional[Union[str, dict]] = None,
+    branch: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Analyze code quality metrics using language-specific tools.
@@ -512,13 +526,14 @@ def analyze_code_quality(*,
         repo_url: Repository URL
         language: Programming language ("go" or "java")
         gitlab_credentials: Optional GitLab credentials
+        branch: Optional branch name to clone
         
     Returns:
         Dictionary containing quality metrics or errors
     """
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
-        repo_path = clone_repo(repo_url, creds)
+        repo_path = clone_repo(repo_url, creds, branch)
         
         if language.lower() == "go":
             return {
