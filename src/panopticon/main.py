@@ -469,6 +469,19 @@ def fetch_all_branches(*, repo_url: str, gitlab_credentials: Optional[Union[str,
             "error": f"Failed to fetch branches: {str(e)}"
         }
 
+@mcp.prompt()
+def analyze_pmd_violations(pmd_output: str) -> str:
+    return f"""You are a senior software engineer reviewing code quality analysis results.
+Please provide a professional and technical summary of these PMD violations, including:
+1. Overall assessment
+2. Most critical issues that need immediate attention
+3. Patterns of issues found
+4. Specific recommendations for improvement
+5. Priority order for addressing the issues
+
+PMD output:
+{pmd_output}"""
+
 @mcp.tool()
 def analyze_code_quality(*, 
     repo_url: str,
@@ -501,21 +514,11 @@ def analyze_code_quality(*,
             result = run_pmd_analysis(repo_path)
             if "error" in result:
                 return {"status": "error", "error": result["error"]}
-                
-            prompt = f"""You are a senior software engineer reviewing code quality analysis results.
-Please provide a professional and technical summary of these PMD violations, including:
-1. Overall assessment
-2. Most critical issues that need immediate attention
-3. Patterns of issues found
-4. Specific recommendations for improvement
-5. Priority order for addressing the issues
-
-PMD output:
-{result["raw_output"]}"""
             
+            summary = mcp.generate(analyze_pmd_violations(result["raw_output"]))
             return {
                 "status": "success",
-                "summary": mcp.prompt(prompt)
+                "summary": summary
             }
         else:
             return {
