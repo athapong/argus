@@ -579,3 +579,59 @@ def analyze_code_quality(*,
             "status": "error",
             "error": f"Code quality analysis failed: {str(e)}"
         }
+
+@mcp.tool()
+def analyze_code_quality_with_summary(*, 
+    repo_url: str,
+    language: str,
+    gitlab_credentials: Optional[Union[str, dict]] = None,
+    branch: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Analyze code quality and provide AI-generated summary of findings.
+    
+    Args:
+        repo_url: Repository URL
+        language: Programming language ("go" or "java")
+        gitlab_credentials: Optional GitLab credentials
+        branch: Optional branch name to clone
+        
+    Returns:
+        Dictionary containing quality metrics, violations and AI summary
+    """
+    try:
+        # Get raw analysis results
+        analysis_result = analyze_code_quality(
+            repo_url=repo_url,
+            language=language,
+            gitlab_credentials=gitlab_credentials,
+            branch=branch
+        )
+        
+        if analysis_result.get("status") == "error":
+            return analysis_result
+            
+        # Get AI summary of the findings
+        violations = analysis_result.get("metrics", {}).get("violations", [])
+        if violations:
+            prompt = f"""You are a senior software engineer reviewing code quality analysis results.
+Please provide a professional and technical summary of these PMD violations, including:
+1. Overall assessment
+2. Most critical issues that need immediate attention
+3. Patterns of issues found
+4. Specific recommendations for improvement
+5. Priority order for addressing the issues
+
+Violations data:
+{json.dumps(violations, indent=2)}
+"""
+            summary = mcp.ask(prompt)
+            analysis_result["ai_summary"] = summary
+            
+        return analysis_result
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Code quality analysis failed: {str(e)}"
+        }
