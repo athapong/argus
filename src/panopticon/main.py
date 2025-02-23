@@ -225,7 +225,7 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
 
             # Add delay to ensure file is written
             import time
-            max_retries = 30
+            max_retries = 120
             retry_delay = 1  # seconds
             
             for retry in range(max_retries):
