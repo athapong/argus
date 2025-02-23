@@ -243,14 +243,19 @@ def run_gocyclo_analysis(repo_path: str) -> Dict[str, Any]:
 def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
     """Run PMD static code analysis on Java code."""
     try:
-        # Run PMD with default ruleset
+        # Create temporary file for PMD output
+        with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as tmp_file:
+            output_path = tmp_file.name
+            
+        # Run PMD with output to file
         result = subprocess.run(
             [
                 "pmd",
                 "check",
                 "-d", repo_path,
                 "-R", "rulesets/java/quickstart.xml",
-                "-f", "xml"
+                "-f", "xml",
+                "-r", output_path
             ],
             capture_output=True,
             text=True
@@ -266,9 +271,13 @@ def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
             }
         }
         
-        if result.stdout:
-            try:
-                root = ET.fromstring(result.stdout)
+        # Read from output file
+        try:
+            with open(output_path, 'r') as f:
+                xml_content = f.read()
+            
+            if xml_content:
+                root = ET.fromstring(xml_content)
                 for file_element in root.findall(".//file"):
                     file_name = file_element.get("name")
                     file_name = file_name.replace(repo_path + '/', '')  # Make path relative
@@ -307,8 +316,9 @@ def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
                     if v > 0
                 }
                 
-            except ET.ParseError:
-                return {"error": "Failed to parse PMD output"}
+        finally:
+            # Clean up temporary file
+            os.unlink(output_path)
                 
         return metrics
     except FileNotFoundError:
