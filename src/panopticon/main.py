@@ -515,7 +515,7 @@ PMD output:
             
             return {
                 "status": "success",
-                "summary": mcp.ask(prompt)
+                "summary": mcp.prompt(prompt)
             }
         else:
             return {
