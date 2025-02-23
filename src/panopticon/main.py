@@ -198,68 +198,70 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
                 "-fmt=json",
                 "-out=" + output_file,
                 "-quiet",
-                "-exclude-dir=vendor",   # Exclude vendor directory
-                "-exclude-dir=.git",     # Exclude git directory
-                "-exclude-dir=generated", # Exclude generated code
-                "-exclude-dir=mock",     # Exclude mock files
-                "-tests=false",          # Exclude test files
-                "-exclude=G104",         # Exclude common false positive (errors unhandled)
-                repo_path + "/...",      # Scan repository and subdirectories
+                "-exclude-dir=vendor",   
+                "-exclude-dir=.git",     
+                "-exclude-dir=generated",
+                "-exclude-dir=mock",     
+                "-tests=false",          
+                "-exclude=G104",         
+                repo_path + "/...",      
             ]
             
-            # Run the command and capture both stdout and stderr
+            print(f"Running gosec command: {' '.join(cmd)}")
+            print(f"Working directory: {repo_path}")
+            
+            # Run gosec and wait for it to complete
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                check=False,  # Don't raise on non-zero exit codes
+                check=False,
                 cwd=repo_path
             )
             
-            print(f"Running gosec command: {' '.join(cmd)}")
-            print(f"Working directory: {repo_path}")
+            print(f"Gosec scan completed with return code: {result.returncode}")
             print(f"Gosec stdout: {result.stdout}")
             print(f"Gosec stderr: {result.stderr}")
-            print(f"Gosec return code: {result.returncode}")
+
+            # Add delay to ensure file is written
+            import time
+            max_retries = 30
+            retry_delay = 1  # seconds
             
-            # Check if output file exists and has content
-            if os.path.exists(output_file):
-                with open(output_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        try:
-                            scan_result = json.loads(content)
-                            # Add metadata about the scan
-                            return {
-                                "result": scan_result,
-                                "scanned_files": len(go_files),
-                                "command": " ".join(cmd),
-                                "exit_code": result.returncode
-                            }
-                        except json.JSONDecodeError:
-                            return {
-                                "error": "Failed to parse Gosec JSON output",
-                                "raw_output": content[:1000],  # First 1000 chars for debugging
-                                "command": " ".join(cmd)
-                            }
-                    else:
-                        return {
-                            "info": "No security issues found",
-                            "scanned_files": len(go_files),
-                            "command": " ".join(cmd)
-                        }
-            else:
-                return {
-                    "error": "Gosec did not generate output file",
-                    "command": " ".join(cmd),
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "exit_code": result.returncode
-                }
+            for retry in range(max_retries):
+                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                    with open(output_file, 'r') as f:
+                        content = f.read().strip()
+                        if content:
+                            try:
+                                scan_result = json.loads(content)
+                                return {
+                                    "result": scan_result,
+                                    "scanned_files": len(go_files),
+                                    "command": " ".join(cmd),
+                                    "exit_code": result.returncode
+                                }
+                            except json.JSONDecodeError:
+                                return {
+                                    "error": "Failed to parse Gosec JSON output",
+                                    "raw_output": content[:1000],
+                                    "command": " ".join(cmd)
+                                }
+                print(f"Waiting for gosec output file (attempt {retry + 1}/{max_retries})...")
+                time.sleep(retry_delay)
+            
+            return {
+                "error": "Gosec output file not found or empty after waiting",
+                "command": " ".join(cmd),
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.returncode
+            }
 
         finally:
-            # Clean up temporary file
             if os.path.exists(output_file):
+                with open(output_file, 'r') as f:
+                    print(f"Final output file contents: {f.read()[:1000]}")
                 os.remove(output_file)
 
     except subprocess.CalledProcessError as e:
