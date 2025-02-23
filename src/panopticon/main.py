@@ -12,6 +12,7 @@ from pathlib import Path
 import hashlib
 import gitdb
 from git import Repo, GitCommandError
+import json
 
 # Input schemas
 class GitLabCredentials(BaseModel):
@@ -37,11 +38,19 @@ class DiffInput(BaseModel):
     file_path: Optional[str] = None  # Specific file to diff, if None diffs all changes
     gitlab_credentials: Optional[GitLabCredentials] = None
 
+# Add new input schemas
+class SecurityScanInput(BaseModel):
+    repo_url: str
+    gitlab_credentials: Optional[GitLabCredentials] = None
+    scan_type: Optional[str] = "all"  # "all", "trivy", or "gosec"
+
 mcp = FastMCP(
     "Repository Tools",
     dependencies=[
         "GitPython",
         "gitdb",
+        "trivy",  # Added Trivy dependency
+        "gosec",  # Added Gosec dependency
     ],
     log_level="WARNING"  # Set log level to WARNING to disable INFO logs
 )
@@ -153,6 +162,46 @@ def get_diff_changes(repo_path: str, source: Optional[str], target: Optional[str
         return f"Git diff failed: {str(e)}"
     except Exception as e:
         return f"Error generating diff: {str(e)}"
+
+def run_trivy_scan(repo_path: str) -> Dict[str, Any]:
+    """Run Trivy vulnerability scanner on repository."""
+    try:
+        result = subprocess.run(
+            ["trivy", "fs", "--format", "json", repo_path],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as e:
+        return {"error": f"Trivy scan failed: {e.stderr}"}
+    except json.JSONDecodeError:
+        return {"error": "Failed to parse Trivy output"}
+    except FileNotFoundError:
+        return {"error": "Trivy not installed. Please install Trivy first."}
+
+def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
+    """Run Gosec security scanner on Go code."""
+    try:
+        # Check if there are Go files
+        go_files = list(Path(repo_path).rglob("*.go"))
+        if not go_files:
+            return {"info": "No Go files found to scan"}
+
+        result = subprocess.run(
+            ["gosec", "-fmt=json", "-quiet", "./..."],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=repo_path
+        )
+        return json.loads(result.stdout)
+    except subprocess.CalledProcessError as e:
+        return {"error": f"Gosec scan failed: {e.stderr}"}
+    except json.JSONDecodeError:
+        return {"error": "Failed to parse Gosec output"}
+    except FileNotFoundError:
+        return {"error": "Gosec not installed. Please install Gosec first."}
 
 @mcp.tool()
 def analyze_repository_structure(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> str:
@@ -279,3 +328,35 @@ def get_commit_history(*,
             
     except Exception as e:
         return [{'error': f"Failed to get commit history: {str(e)}"}]
+
+@mcp.tool()
+def security_scan_repository(*, 
+    repo_url: str,
+    scan_type: str = "all",
+    gitlab_credentials: Optional[Union[str, dict]] = None
+) -> Dict[str, Any]:
+    """
+    Perform security scanning on a repository using Trivy and/or Gosec.
+    
+    Args:
+        repo_url: Repository URL to scan
+        scan_type: Type of scan to perform ("all", "trivy", or "gosec")
+        gitlab_credentials: Optional GitLab credentials
+        
+    Returns:
+        Dictionary containing scan results or errors
+    """
+    try:
+        creds = create_gitlab_credentials(gitlab_credentials)
+        repo_path = clone_repo(repo_url, creds)
+        results = {}
+
+        if scan_type in ["all", "trivy"]:
+            results["trivy_scan"] = run_trivy_scan(repo_path)
+            
+        if scan_type in ["all", "gosec"]:
+            results["gosec_scan"] = run_gosec_scan(repo_path)
+            
+        return results
+    except Exception as e:
+        return {"error": f"Security scan failed: {str(e)}"}
