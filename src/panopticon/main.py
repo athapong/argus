@@ -188,6 +188,21 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
         if not go_files:
             return {"info": "No Go files found to scan"}
 
+        # Initialize Go modules
+        try:
+            subprocess.run(
+                ["go", "mod", "tidy"],
+                cwd=repo_path,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+        except subprocess.CalledProcessError as e:
+            return {
+                "error": "Failed to initialize Go modules",
+                "details": e.stderr
+            }
+
         # Create temporary file for output
         output_file = os.path.join(tempfile.gettempdir(), f"gosec_output_{os.getpid()}.json")
         
@@ -203,7 +218,7 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
                 "-exclude-dir=mock",     
                 "-tests=false",          
                 "-exclude=G104",         
-                repo_path + "/...",      
+                "./...",      # Changed to use ./... for proper Go package scanning
             ]
             
             print(f"Running gosec command: {' '.join(cmd)}")
@@ -211,21 +226,16 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
             
             # Run gosec with timeout
             try:
-                import signal
-                from subprocess import TimeoutExpired
-
-                # Create process
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    cwd=repo_path
+                    cwd=repo_path  # Working directory is important for ./... to work
                 )
 
                 try:
-                    # Wait for process with timeout
-                    stdout, stderr = process.communicate(timeout=300)  # 5 minutes timeout
+                    stdout, stderr = process.communicate(timeout=300)
                     result_code = process.returncode
 
                     print(f"Gosec scan completed with return code: {result_code}")
