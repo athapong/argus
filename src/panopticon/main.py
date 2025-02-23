@@ -30,6 +30,13 @@ class EnumerateBranchesInput(BaseModel):
     repo_url: str
     gitlab_credentials: Optional[GitLabCredentials] = None
 
+class DiffInput(BaseModel):
+    repo_url: str
+    source: Optional[str] = None  # Branch or commit ID, if None uses current
+    target: Optional[str] = None  # Branch or commit ID, if None uses previous commit
+    file_path: Optional[str] = None  # Specific file to diff, if None diffs all changes
+    gitlab_credentials: Optional[GitLabCredentials] = None
+
 mcp = FastMCP(
     "Repository Tools",
     dependencies=[
@@ -116,6 +123,37 @@ def create_gitlab_credentials(creds: Optional[Union[str, dict]]) -> Optional[Git
     return None
 
 @mcp.tool()
+def get_diff_changes(repo: Repo, source: Optional[str], target: Optional[str], file_path: Optional[str] = None) -> str:
+    """Get diff between two commits/branches."""
+    try:
+        # Handle source
+        if source:
+            source_commit = repo.commit(source)
+        else:
+            source_commit = repo.head.commit
+
+        # Handle target
+        if target:
+            target_commit = repo.commit(target)
+        else:
+            target_commit = source_commit.parents[0] if source_commit.parents else None
+            if not target_commit:
+                return "No previous commit found to compare with."
+
+        # Generate diff
+        if file_path:
+            diff = repo.git.diff(target_commit, source_commit, '--', file_path)
+        else:
+            diff = repo.git.diff(target_commit, source_commit)
+
+        return diff if diff else "No changes found."
+
+    except GitCommandError as e:
+        return f"Git diff failed: {str(e)}"
+    except Exception as e:
+        return f"Error generating diff: {str(e)}"
+
+@mcp.tool()
 def analyze_repository_structure(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> str:
     """
     Generate a tree representation of a repository's file structure.
@@ -176,4 +214,70 @@ def enumerate_branches(*, repo_url: str, gitlab_credentials: Optional[Union[str,
             
     except Exception as e:
         return [f"Branch enumeration failed: {str(e)}"]
+
+@mcp.tool()
+def compare_git_changes(*, 
+    repo_url: str, 
+    source: Optional[str] = None, 
+    target: Optional[str] = None,
+    file_path: Optional[str] = None,
+    gitlab_credentials: Optional[Union[str, dict]] = None
+) -> str:
+    """
+    Compare changes between git commits or branches.
+    
+    Args:
+        repo_url: Repository URL
+        source: Source branch/commit (default: current HEAD)
+        target: Target branch/commit (default: previous commit)
+        file_path: Specific file to compare (optional)
+        gitlab_credentials: Optional GitLab credentials
+    """
+    try:
+        creds = create_gitlab_credentials(gitlab_credentials)
+        repo_path = clone_repo(repo_url, creds)
+        repo = Repo(repo_path)
+        
+        return get_diff_changes(repo, source, target, file_path)
+        
+    except Exception as e:
+        return f"Comparison failed: {str(e)}"
+
+@mcp.tool()
+def get_commit_history(*, 
+    repo_url: str, 
+    branch: Optional[str] = None,
+    max_count: int = 10,
+    gitlab_credentials: Optional[Union[str, dict]] = None
+) -> List[dict]:
+    """
+    Get commit history for a repository branch.
+    
+    Args:
+        repo_url: Repository URL
+        branch: Branch name (default: current branch)
+        max_count: Maximum number of commits to return
+        gitlab_credentials: Optional GitLab credentials
+    """
+    try:
+        creds = create_gitlab_credentials(gitlab_credentials)
+        repo_path = clone_repo(repo_url, creds)
+        repo = Repo(repo_path)
+        
+        if (branch):
+            repo.git.checkout(branch)
+            
+        commits = []
+        for commit in repo.iter_commits(max_count=max_count):
+            commits.append({
+                'hash': commit.hexsha,
+                'author': f"{commit.author.name} <{commit.author.email}>",
+                'date': commit.committed_datetime.isoformat(),
+                'message': commit.message.strip()
+            })
+            
+        return commits
+            
+    except Exception as e:
+        return [{'error': f"Failed to get commit history: {str(e)}"}]
 
