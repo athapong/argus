@@ -13,6 +13,8 @@ import hashlib
 import gitdb
 from git import Repo, GitCommandError
 import json
+from enum import Enum
+import xml.etree.ElementTree as ET
 
 # Input schemas
 class GitLabCredentials(BaseModel):
@@ -43,6 +45,11 @@ class SecurityScanInput(BaseModel):
     repo_url: str
     gitlab_credentials: Optional[GitLabCredentials] = None
     scan_type: Optional[str] = "trivy"  # Only trivy option remains
+
+class CodeQualityInput(BaseModel):
+    repo_url: str
+    language: str  # "go" or "java"
+    gitlab_credentials: Optional[GitLabCredentials] = None
 
 mcp = FastMCP(
     "Repository Tools",
@@ -178,6 +185,101 @@ def run_trivy_scan(repo_path: str) -> Dict[str, Any]:
         return {"error": "Failed to parse Trivy output"}
     except FileNotFoundError:
         return {"error": "Trivy not installed. Please install Trivy first."}
+
+def run_gocyclo_analysis(repo_path: str) -> Dict[str, Any]:
+    """Run cyclomatic complexity analysis on Go code."""
+    try:
+        result = subprocess.run(
+            ["gocyclo", "-avg", "-over=10", "."],
+            cwd=repo_path,
+            capture_output=True,
+            text=True
+        )
+        
+        metrics = {
+            "cyclomatic_complexity": [],
+            "average_complexity": 0,
+            "high_complexity_functions": 0
+        }
+        
+        if result.stdout:
+            lines = result.stdout.strip().split('\n')
+            total_complexity = 0
+            for line in lines:
+                if line:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        complexity = int(parts[0])
+                        function_name = parts[-1]
+                        file_path = parts[-2]
+                        metrics["cyclomatic_complexity"].append({
+                            "complexity": complexity,
+                            "function": function_name,
+                            "file": file_path
+                        })
+                        total_complexity += complexity
+                        if complexity > 10:
+                            metrics["high_complexity_functions"] += 1
+                            
+            if len(lines) > 0:
+                metrics["average_complexity"] = total_complexity / len(lines)
+                
+        return metrics
+    except FileNotFoundError:
+        return {"error": "gocyclo not installed. Please install with: go install github.com/fzipp/gocyclo/cmd/gocyclo@latest"}
+    except Exception as e:
+        return {"error": f"Failed to run gocyclo: {str(e)}"}
+
+def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
+    """Run PMD static code analysis on Java code."""
+    try:
+        # Run PMD with default ruleset
+        result = subprocess.run(
+            [
+                "pmd",
+                "check",
+                "-d", repo_path,
+                "-R", "rulesets/java/quickstart.xml",
+                "-f", "xml"
+            ],
+            capture_output=True,
+            text=True
+        )
+        
+        metrics = {
+            "violations": [],
+            "summary": {
+                "total_violations": 0,
+                "priority_1": 0,
+                "priority_2": 0,
+                "priority_3": 0
+            }
+        }
+        
+        if result.stdout:
+            try:
+                root = ET.fromstring(result.stdout)
+                for file_element in root.findall(".//file"):
+                    file_name = file_element.get("name")
+                    for violation in file_element.findall("violation"):
+                        priority = int(violation.get("priority", "3"))
+                        metrics["violations"].append({
+                            "file": file_name,
+                            "line": violation.get("beginline"),
+                            "rule": violation.get("rule"),
+                            "priority": priority,
+                            "message": violation.text.strip() if violation.text else ""
+                        })
+                        metrics["summary"]["total_violations"] += 1
+                        metrics["summary"][f"priority_{priority}"] += 1
+            except ET.ParseError:
+                return {"error": "Failed to parse PMD output"}
+                
+        return metrics
+    except FileNotFoundError:
+        return {"error": "PMD not installed. Please install PMD from https://pmd.github.io/"}
+    except Exception as e:
+        return {"error": f"Failed to run PMD: {str(e)}"}
 
 @mcp.tool()
 def analyze_repository_structure(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> str:
@@ -370,4 +472,47 @@ def fetch_all_branches(*, repo_url: str, gitlab_credentials: Optional[Union[str,
         return {
             "status": "error",
             "error": f"Failed to fetch branches: {str(e)}"
+        }
+
+@mcp.tool()
+def analyze_code_quality(*, 
+    repo_url: str,
+    language: str,
+    gitlab_credentials: Optional[Union[str, dict]] = None
+) -> Dict[str, Any]:
+    """
+    Analyze code quality metrics using language-specific tools.
+    
+    Args:
+        repo_url: Repository URL
+        language: Programming language ("go" or "java")
+        gitlab_credentials: Optional GitLab credentials
+        
+    Returns:
+        Dictionary containing quality metrics or errors
+    """
+    try:
+        creds = create_gitlab_credentials(gitlab_credentials)
+        repo_path = clone_repo(repo_url, creds)
+        
+        if language.lower() == "go":
+            return {
+                "status": "success",
+                "metrics": run_gocyclo_analysis(repo_path)
+            }
+        elif language.lower() == "java":
+            return {
+                "status": "success",
+                "metrics": run_pmd_analysis(repo_path)
+            }
+        else:
+            return {
+                "status": "error",
+                "error": f"Unsupported language: {language}. Supported languages: go, java"
+            }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Code quality analysis failed: {str(e)}"
         }
