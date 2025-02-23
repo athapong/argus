@@ -183,24 +183,41 @@ def run_trivy_scan(repo_path: str) -> Dict[str, Any]:
 def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
     """Run Gosec security scanner on Go code."""
     try:
-        # Check if there are Go files
+        # Check if there are Go files and go.mod
         go_files = list(Path(repo_path).rglob("*.go"))
         if not go_files:
             return {"info": "No Go files found to scan"}
-
-        # Initialize Go modules
+            
+        # Find the root Go module directory (where go.mod is located)
+        go_mod_path = None
+        for path in Path(repo_path).rglob("go.mod"):
+            go_mod_path = path.parent
+            break
+            
+        if not go_mod_path:
+            return {"error": "No go.mod file found in repository"}
+            
+        # Set GOPATH if not set
+        env = os.environ.copy()
+        if 'GOPATH' not in env:
+            home = os.path.expanduser("~")
+            env['GOPATH'] = os.path.join(home, "go")
+            
+        # Initialize Go modules from the correct directory
         try:
             subprocess.run(
                 ["go", "mod", "tidy"],
-                cwd=repo_path,
+                cwd=str(go_mod_path),  # Use the directory containing go.mod
                 check=True,
                 capture_output=True,
-                text=True
+                text=True,
+                env=env
             )
         except subprocess.CalledProcessError as e:
             return {
                 "error": "Failed to initialize Go modules",
-                "details": e.stderr
+                "details": e.stderr,
+                "working_dir": str(go_mod_path)
             }
 
         # Create temporary file for output
@@ -218,20 +235,21 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
                 "-exclude-dir=mock",     
                 "-tests=false",          
                 "-exclude=G104",         
-                "./...",      # Changed to use ./... for proper Go package scanning
+                "./...",
             ]
             
             print(f"Running gosec command: {' '.join(cmd)}")
-            print(f"Working directory: {repo_path}")
+            print(f"Working directory: {go_mod_path}")
             
-            # Run gosec with timeout
+            # Run gosec with timeout from the go.mod directory
             try:
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    cwd=repo_path  # Working directory is important for ./... to work
+                    cwd=str(go_mod_path),  # Use the directory containing go.mod
+                    env=env
                 )
 
                 try:
