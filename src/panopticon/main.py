@@ -42,15 +42,14 @@ class DiffInput(BaseModel):
 class SecurityScanInput(BaseModel):
     repo_url: str
     gitlab_credentials: Optional[GitLabCredentials] = None
-    scan_type: Optional[str] = "all"  # "all", "trivy", or "gosec"
+    scan_type: Optional[str] = "trivy"  # Only trivy option remains
 
 mcp = FastMCP(
     "Repository Tools",
     dependencies=[
         "GitPython",
         "gitdb",
-        "trivy",  # Added Trivy dependency
-        "gosec",  # Added Gosec dependency
+        "trivy",  # Only keep Trivy dependency
     ],
     log_level="WARNING"  # Set log level to WARNING to disable INFO logs
 )
@@ -179,140 +178,6 @@ def run_trivy_scan(repo_path: str) -> Dict[str, Any]:
         return {"error": "Failed to parse Trivy output"}
     except FileNotFoundError:
         return {"error": "Trivy not installed. Please install Trivy first."}
-
-def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
-    """Run Gosec security scanner on Go code."""
-    try:
-        # Check if there are Go files and go.mod
-        go_files = list(Path(repo_path).rglob("*.go"))
-        if not go_files:
-            return {"info": "No Go files found to scan"}
-            
-        # Find the root Go module directory (where go.mod is located)
-        go_mod_path = None
-        for path in Path(repo_path).rglob("go.mod"):
-            go_mod_path = path.parent
-            break
-            
-        if not go_mod_path:
-            return {"error": "No go.mod file found in repository"}
-            
-        # Set GOPATH if not set
-        env = os.environ.copy()
-        if 'GOPATH' not in env:
-            home = os.path.expanduser("~")
-            env['GOPATH'] = os.path.join(home, "go")
-            
-        # Try to initialize Go modules but continue even if it fails
-        try:
-            result = subprocess.run(
-                ["go", "mod", "tidy"],
-                cwd=str(go_mod_path),
-                capture_output=True,
-                text=True,
-                env=env
-            )
-            if result.returncode != 0:
-                print(f"Note: go mod tidy had issues but continuing: {result.stderr}")
-        except Exception as e:
-            print(f"Note: go mod tidy failed but continuing: {str(e)}")
-
-        # Create temporary file for output
-        output_file = os.path.join(tempfile.gettempdir(), f"gosec_output_{os.getpid()}.json")
-        
-        try:
-            cmd = [
-                "gosec",
-                "-fmt=json",
-                "-out=" + output_file,
-                "-quiet",
-                "-exclude-dir=vendor",   
-                "-exclude-dir=.git",     
-                "-exclude-generated",
-                "-exclude-dir=mock",     
-                "-tests=false",          
-                "-exclude=G104",         
-                "./...",
-            ]
-            
-            print(f"Running gosec command: {' '.join(cmd)}")
-            print(f"Working directory: {go_mod_path}")
-            
-            # Run gosec with timeout from the go.mod directory
-            try:
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    cwd=str(go_mod_path),  # Use the directory containing go.mod
-                    env=env
-                )
-
-                try:
-                    stdout, stderr = process.communicate(timeout=300)
-                    result_code = process.returncode
-
-                    print(f"Gosec scan completed with return code: {result_code}")
-                    print(f"Gosec stdout: {stdout}")
-                    print(f"Gosec stderr: {stderr}")
-
-                except TimeoutExpired:
-                    # Kill the process if it times out
-                    process.kill()
-                    stdout, stderr = process.communicate()
-                    return {
-                        "error": "Gosec scan timed out after 5 minutes",
-                        "command": " ".join(cmd),
-                        "partial_stdout": stdout,
-                        "partial_stderr": stderr
-                    }
-
-            except Exception as e:
-                return {
-                    "error": f"Error running gosec: {str(e)}",
-                    "command": " ".join(cmd)
-                }
-
-            # Check output file immediately after process completion
-            if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                with open(output_file, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        try:
-                            scan_result = json.loads(content)
-                            return {
-                                "result": scan_result,
-                                "scanned_files": len(go_files),
-                                "command": " ".join(cmd),
-                                "exit_code": result_code
-                            }
-                        except json.JSONDecodeError:
-                            return {
-                                "error": "Failed to parse Gosec JSON output",
-                                "raw_output": content[:1000],
-                                "command": " ".join(cmd)
-                            }
-            
-            return {
-                "error": "Gosec did not generate output file",
-                "command": " ".join(cmd),
-                "stdout": stdout,
-                "stderr": stderr,
-                "exit_code": result_code
-            }
-
-        finally:
-            if os.path.exists(output_file):
-                with open(output_file, 'r') as f:
-                    print(f"Final output file contents: {f.read()[:1000]}")
-                os.remove(output_file)
-
-    except Exception as e:
-        return {
-            "error": f"Unexpected error during Gosec scan: {str(e)}",
-            "type": str(type(e).__name__)
-        }
 
 @mcp.tool()
 def analyze_repository_structure(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> str:
@@ -443,15 +308,15 @@ def get_commit_history(*,
 @mcp.tool()
 def security_scan_repository(*, 
     repo_url: str,
-    scan_type: str = "all",
+    scan_type: str = "trivy",
     gitlab_credentials: Optional[Union[str, dict]] = None
 ) -> Dict[str, Any]:
     """
-    Perform security scanning on a repository using Trivy and/or Gosec.
+    Perform security scanning on a repository using Trivy.
     
     Args:
         repo_url: Repository URL to scan
-        scan_type: Type of scan to perform ("all", "trivy", or "gosec")
+        scan_type: Type of scan to perform (only "trivy" supported)
         gitlab_credentials: Optional GitLab credentials
         
     Returns:
@@ -460,14 +325,49 @@ def security_scan_repository(*,
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
         repo_path = clone_repo(repo_url, creds)
-        results = {}
-
-        if scan_type in ["all", "trivy"]:
-            results["trivy_scan"] = run_trivy_scan(repo_path)
+        
+        if scan_type != "trivy":
+            return {"error": "Only Trivy scanning is supported"}
             
-        if scan_type in ["all", "gosec"]:
-            results["gosec_scan"] = run_gosec_scan(repo_path)
-            
-        return results
+        return {"trivy_scan": run_trivy_scan(repo_path)}
     except Exception as e:
         return {"error": f"Security scan failed: {str(e)}"}
+
+@mcp.tool()
+def fetch_all_branches(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> Dict[str, Any]:
+    """
+    Fetch all branches from a repository and ensure they are up to date.
+    
+    Args:
+        repo_url: Repository URL to fetch from
+        gitlab_credentials: Optional GitLab credentials
+        
+    Returns:
+        Dictionary containing branch information or error
+    """
+    try:
+        creds = create_gitlab_credentials(gitlab_credentials)
+        repo_path = clone_repo(repo_url, creds)
+        repo = Repo(repo_path)
+        
+        # Fetch all remotes and their branches
+        for remote in repo.remotes:
+            remote.fetch()
+            
+        # Get all branches (both local and remote)
+        branches = {
+            "local": [branch.name for branch in repo.heads],
+            "remote": [ref.name for ref in repo.remote().refs if not ref.name.endswith('/HEAD')],
+            "current": repo.active_branch.name
+        }
+        
+        return {
+            "status": "success",
+            "branches": branches
+        }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Failed to fetch branches: {str(e)}"
+        }
