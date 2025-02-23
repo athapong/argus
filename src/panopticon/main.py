@@ -196,11 +196,15 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
             cmd = [
                 "gosec",
                 "-fmt=json",
-                "-out=" + output_file,  # Use absolute path with = syntax
+                "-out=" + output_file,
                 "-quiet",
-                "-exclude-dir=vendor",  # Exclude vendor directory
-                "-exclude-dir=.git",    # Exclude git directory
-                repo_path              # Scan specific path instead of ./...
+                "-exclude-dir=vendor",   # Exclude vendor directory
+                "-exclude-dir=.git",     # Exclude git directory
+                "-exclude-dir=generated", # Exclude generated code
+                "-exclude-dir=mock",     # Exclude mock files
+                "-tests=false",          # Exclude test files
+                "-exclude=G104",         # Exclude common false positive (errors unhandled)
+                repo_path + "/...",      # Scan repository and subdirectories
             ]
             
             # Run the command and capture both stdout and stderr
@@ -208,11 +212,12 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
                 cmd,
                 capture_output=True,
                 text=True,
-                check=False,
+                check=False,  # Don't raise on non-zero exit codes
                 cwd=repo_path
             )
             
-            # Log the command output for debugging
+            print(f"Running gosec command: {' '.join(cmd)}")
+            print(f"Working directory: {repo_path}")
             print(f"Gosec stdout: {result.stdout}")
             print(f"Gosec stderr: {result.stderr}")
             print(f"Gosec return code: {result.returncode}")
