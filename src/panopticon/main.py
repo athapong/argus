@@ -5,7 +5,7 @@ from mcp.server.fastmcp.resources import types
 from pydantic import BaseModel
 import os
 import subprocess
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict, Any
 import tempfile
 import shutil
 from pathlib import Path
@@ -122,10 +122,10 @@ def create_gitlab_credentials(creds: Optional[Union[str, dict]]) -> Optional[Git
         return GitLabCredentials(**creds)
     return None
 
-@mcp.tool()
-def get_diff_changes(repo: Repo, source: Optional[str], target: Optional[str], file_path: Optional[str] = None) -> str:
+def get_diff_changes(repo_path: str, source: Optional[str], target: Optional[str], file_path: Optional[str] = None) -> str:
     """Get diff between two commits/branches."""
     try:
+        repo = Repo(repo_path)
         # Handle source
         if source:
             source_commit = repo.commit(source)
@@ -236,9 +236,7 @@ def compare_git_changes(*,
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
         repo_path = clone_repo(repo_url, creds)
-        repo = Repo(repo_path)
-        
-        return get_diff_changes(repo, source, target, file_path)
+        return get_diff_changes(repo_path, source, target, file_path)
         
     except Exception as e:
         return f"Comparison failed: {str(e)}"
@@ -281,3 +279,73 @@ def get_commit_history(*,
     except Exception as e:
         return [{'error': f"Failed to get commit history: {str(e)}"}]
 
+@mcp.resource("git://{repo_url}?gitlab_credentials={gitlab_credentials}")
+def get_repository(repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> Dict[str, Any]:
+    """Get repository information and contents"""
+    try:
+        creds = create_gitlab_credentials(gitlab_credentials)
+        repo_path = clone_repo(repo_url, creds)
+        repo = Repo(repo_path)
+        
+        return {
+            "url": repo_url,
+            "path": repo_path,
+            "default_branch": repo.active_branch.name,
+            "branches": [branch.name for branch in repo.branches],
+            "head_commit": {
+                "hash": repo.head.commit.hexsha,
+                "author": f"{repo.head.commit.author.name} <{repo.head.commit.author.email}>",
+                "message": repo.head.commit.message.strip()
+            }
+        }
+    except Exception as e:
+        return {"error": f"Failed to get repository: {str(e)}"}
+
+@mcp.resource("git://{repo_url}/branch/{branch_name}?gitlab_credentials={gitlab_credentials}")
+def get_branch_info(repo_url: str, branch_name: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> Dict[str, Any]:
+    """Get information about a specific branch"""
+    try:
+        creds = create_gitlab_credentials(gitlab_credentials)
+        repo_path = clone_repo(repo_url, creds)
+        repo = Repo(repo_path)
+        
+        # Checkout the specified branch
+        repo.git.checkout(branch_name)
+        
+        branch = repo.active_branch
+        return {
+            "name": branch_name,
+            "commit": {
+                "hash": branch.commit.hexsha,
+                "author": f"{branch.commit.author.name} <{branch.commit.author.email}>",
+                "message": branch.commit.message.strip(),
+                "date": branch.commit.committed_datetime.isoformat()
+            }
+        }
+    except Exception as e:
+        return {"error": f"Failed to get branch info: {str(e)}"}
+
+@mcp.resource("git://{repo_url}/file/{file_path}?gitlab_credentials={gitlab_credentials}")
+def get_file_content(repo_url: str, file_path: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> Dict[str, Any]:
+    """Get content of a specific file from repository"""
+    try:
+        creds = create_gitlab_credentials(gitlab_credentials)
+        repo_path = clone_repo(repo_url, creds)
+        full_path = os.path.join(repo_path, file_path)
+        
+        if not os.path.isfile(full_path):
+            return {"error": "File not found"}
+            
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                return {
+                    "path": file_path,
+                    "content": content,
+                    "size": os.path.getsize(full_path)
+                }
+        except Exception as e:
+            return {"error": f"Error reading file: {str(e)}"}
+            
+    except Exception as e:
+        return {"error": f"Failed to get file: {str(e)}"}
