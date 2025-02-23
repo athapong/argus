@@ -241,7 +241,7 @@ def run_gocyclo_analysis(repo_path: str) -> Dict[str, Any]:
         return {"error": f"Failed to run gocyclo: {str(e)}"}
 
 def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
-    """Run PMD static code analysis on Java code."""
+    """Run PMD static code analysis on Java code and return raw output."""
     try:
         # Create temporary file for PMD output
         with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as tmp_file:
@@ -261,79 +261,13 @@ def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
             text=True
         )
         
-        metrics = {
-            "violations": [],
-            "summary": {
-                "total_violations": 0,
-                "by_priority": {},
-                "by_ruleset": {},
-                "by_file": {}
-            }
-        }
-        
-        # Read from output file
         try:
             with open(output_path, 'r') as f:
                 xml_content = f.read()
-            
-            if xml_content:
-                try:
-                    root = ET.fromstring(xml_content)
-                    for file_element in root.findall(".//file"):
-                        file_name = file_element.get("name", "")
-                        # Make path relative to repo root
-                        file_name = file_name.replace(repo_path + '/', '')
-                        
-                        if file_name not in metrics["summary"]["by_file"]:
-                            metrics["summary"]["by_file"][file_name] = 0
-                            
-                        for violation in file_element.findall("violation"):
-                            priority = int(violation.get("priority", "3"))
-                            ruleset = violation.get("ruleset", "unknown")
-                            rule = violation.get("rule", "unknown")
-                            
-                            # Add violation details
-                            violation_info = {
-                                "file": file_name,
-                                "beginline": violation.get("beginline"),
-                                "endline": violation.get("endline"),
-                                "begincolumn": violation.get("begincolumn"),
-                                "endcolumn": violation.get("endcolumn"),
-                                "rule": rule,
-                                "ruleset": ruleset,
-                                "priority": priority,
-                                "package": violation.get("package", ""),
-                                "class": violation.get("class", ""),
-                                "method": violation.get("method", ""),
-                                "message": violation.text.strip() if violation.text else "",
-                                "external_info_url": violation.get("externalInfoUrl", "")
-                            }
-                            
-                            metrics["violations"].append(violation_info)
-                            metrics["summary"]["total_violations"] += 1
-                            
-                            # Update priority count
-                            if priority not in metrics["summary"]["by_priority"]:
-                                metrics["summary"]["by_priority"][priority] = 0
-                            metrics["summary"]["by_priority"][priority] += 1
-                            
-                            # Update ruleset count
-                            if ruleset not in metrics["summary"]["by_ruleset"]:
-                                metrics["summary"]["by_ruleset"][ruleset] = 0
-                            metrics["summary"]["by_ruleset"][ruleset] += 1
-                            
-                            # Update file count
-                            metrics["summary"]["by_file"][file_name] += 1
-                            
-                except ET.ParseError as pe:
-                    return {"error": f"Failed to parse PMD output XML: {str(pe)}"}
-                    
+            return {"raw_output": xml_content}
         finally:
-            # Clean up temporary file
             os.unlink(output_path)
                 
-        return metrics
-        
     except FileNotFoundError:
         return {"error": "PMD not installed. Please install PMD from https://pmd.github.io/"}
     except Exception as e:
@@ -543,7 +477,7 @@ def analyze_code_quality(*,
     branch: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Analyze code quality metrics using language-specific tools.
+    Analyze code quality and provide AI-generated summary.
     
     Args:
         repo_url: Repository URL
@@ -552,7 +486,7 @@ def analyze_code_quality(*,
         branch: Optional branch name to clone
         
     Returns:
-        Dictionary containing quality metrics or errors
+        Dictionary containing analysis results and AI summary
     """
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
@@ -564,56 +498,10 @@ def analyze_code_quality(*,
                 "metrics": run_gocyclo_analysis(repo_path)
             }
         elif language.lower() == "java":
-            return {
-                "status": "success",
-                "metrics": run_pmd_analysis(repo_path)
-            }
-        else:
-            return {
-                "status": "error",
-                "error": f"Unsupported language: {language}. Supported languages: go, java"
-            }
-            
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"Code quality analysis failed: {str(e)}"
-        }
-
-@mcp.tool()
-def analyze_code_quality_with_summary(*, 
-    repo_url: str,
-    language: str,
-    gitlab_credentials: Optional[Union[str, dict]] = None,
-    branch: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Analyze code quality and provide AI-generated summary of findings.
-    
-    Args:
-        repo_url: Repository URL
-        language: Programming language ("go" or "java")
-        gitlab_credentials: Optional GitLab credentials
-        branch: Optional branch name to clone
-        
-    Returns:
-        Dictionary containing quality metrics, violations and AI summary
-    """
-    try:
-        # Get raw analysis results
-        analysis_result = analyze_code_quality(
-            repo_url=repo_url,
-            language=language,
-            gitlab_credentials=gitlab_credentials,
-            branch=branch
-        )
-        
-        if analysis_result.get("status") == "error":
-            return analysis_result
-            
-        # Get AI summary of the findings
-        violations = analysis_result.get("metrics", {}).get("violations", [])
-        if violations:
+            result = run_pmd_analysis(repo_path)
+            if "error" in result:
+                return {"status": "error", "error": result["error"]}
+                
             prompt = f"""You are a senior software engineer reviewing code quality analysis results.
 Please provide a professional and technical summary of these PMD violations, including:
 1. Overall assessment
@@ -622,13 +510,18 @@ Please provide a professional and technical summary of these PMD violations, inc
 4. Specific recommendations for improvement
 5. Priority order for addressing the issues
 
-Violations data:
-{json.dumps(violations, indent=2)}
-"""
-            summary = mcp.ask(prompt)
-            analysis_result["ai_summary"] = summary
+PMD output:
+{result["raw_output"]}"""
             
-        return analysis_result
+            return {
+                "status": "success",
+                "summary": mcp.ask(prompt)
+            }
+        else:
+            return {
+                "status": "error",
+                "error": f"Unsupported language: {language}. Supported languages: go, java"
+            }
             
     except Exception as e:
         return {
