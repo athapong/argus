@@ -265,7 +265,7 @@ def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
             "violations": [],
             "summary": {
                 "total_violations": 0,
-                "by_priority": {1: 0, 2: 0, 3: 0, 4: 0, 5: 0},
+                "by_priority": {},
                 "by_ruleset": {},
                 "by_file": {}
             }
@@ -277,50 +277,63 @@ def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
                 xml_content = f.read()
             
             if xml_content:
-                root = ET.fromstring(xml_content)
-                for file_element in root.findall(".//file"):
-                    file_name = file_element.get("name")
-                    file_name = file_name.replace(repo_path + '/', '')  # Make path relative
+                try:
+                    root = ET.fromstring(xml_content)
+                    for file_element in root.findall(".//file"):
+                        file_name = file_element.get("name", "")
+                        # Make path relative to repo root
+                        file_name = file_name.replace(repo_path + '/', '')
+                        
+                        if file_name not in metrics["summary"]["by_file"]:
+                            metrics["summary"]["by_file"][file_name] = 0
+                            
+                        for violation in file_element.findall("violation"):
+                            priority = int(violation.get("priority", "3"))
+                            ruleset = violation.get("ruleset", "unknown")
+                            rule = violation.get("rule", "unknown")
+                            
+                            # Add violation details
+                            violation_info = {
+                                "file": file_name,
+                                "beginline": violation.get("beginline"),
+                                "endline": violation.get("endline"),
+                                "begincolumn": violation.get("begincolumn"),
+                                "endcolumn": violation.get("endcolumn"),
+                                "rule": rule,
+                                "ruleset": ruleset,
+                                "priority": priority,
+                                "package": violation.get("package", ""),
+                                "class": violation.get("class", ""),
+                                "method": violation.get("method", ""),
+                                "message": violation.text.strip() if violation.text else "",
+                                "external_info_url": violation.get("externalInfoUrl", "")
+                            }
+                            
+                            metrics["violations"].append(violation_info)
+                            metrics["summary"]["total_violations"] += 1
+                            
+                            # Update priority count
+                            if priority not in metrics["summary"]["by_priority"]:
+                                metrics["summary"]["by_priority"][priority] = 0
+                            metrics["summary"]["by_priority"][priority] += 1
+                            
+                            # Update ruleset count
+                            if ruleset not in metrics["summary"]["by_ruleset"]:
+                                metrics["summary"]["by_ruleset"][ruleset] = 0
+                            metrics["summary"]["by_ruleset"][ruleset] += 1
+                            
+                            # Update file count
+                            metrics["summary"]["by_file"][file_name] += 1
+                            
+                except ET.ParseError as pe:
+                    return {"error": f"Failed to parse PMD output XML: {str(pe)}"}
                     
-                    if file_name not in metrics["summary"]["by_file"]:
-                        metrics["summary"]["by_file"][file_name] = 0
-                        
-                    for violation in file_element.findall("violation"):
-                        priority = int(violation.get("priority", "3"))
-                        ruleset = violation.get("ruleset", "unknown")
-                        rule = violation.get("rule", "unknown")
-                        
-                        violation_info = {
-                            "file": file_name,
-                            "line": violation.get("beginline"),
-                            "rule": rule,
-                            "ruleset": ruleset,
-                            "priority": priority,
-                            "message": violation.text.strip() if violation.text else "",
-                            "external_info_url": violation.get("externalInfoUrl", "")
-                        }
-                        
-                        metrics["violations"].append(violation_info)
-                        metrics["summary"]["total_violations"] += 1
-                        metrics["summary"]["by_priority"][priority] += 1
-                        metrics["summary"]["by_file"][file_name] += 1
-                        
-                        # Track violations by ruleset
-                        if ruleset not in metrics["summary"]["by_ruleset"]:
-                            metrics["summary"]["by_ruleset"][ruleset] = 0
-                        metrics["summary"]["by_ruleset"][ruleset] += 1
-                        
-                # Clean up the summary by removing unused priority counts
-                metrics["summary"]["by_priority"] = {
-                    k: v for k, v in metrics["summary"]["by_priority"].items() 
-                    if v > 0
-                }
-                
         finally:
             # Clean up temporary file
             os.unlink(output_path)
                 
         return metrics
+        
     except FileNotFoundError:
         return {"error": "PMD not installed. Please install PMD from https://pmd.github.io/"}
     except Exception as e:
