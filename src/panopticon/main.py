@@ -203,22 +203,19 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
             home = os.path.expanduser("~")
             env['GOPATH'] = os.path.join(home, "go")
             
-        # Initialize Go modules from the correct directory
+        # Try to initialize Go modules but continue even if it fails
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["go", "mod", "tidy"],
-                cwd=str(go_mod_path),  # Use the directory containing go.mod
-                check=True,
+                cwd=str(go_mod_path),
                 capture_output=True,
                 text=True,
                 env=env
             )
-        except subprocess.CalledProcessError as e:
-            return {
-                "error": "Failed to initialize Go modules",
-                "details": e.stderr,
-                "working_dir": str(go_mod_path)
-            }
+            if result.returncode != 0:
+                print(f"Note: go mod tidy had issues but continuing: {result.stderr}")
+        except Exception as e:
+            print(f"Note: go mod tidy failed but continuing: {str(e)}")
 
         # Create temporary file for output
         output_file = os.path.join(tempfile.gettempdir(), f"gosec_output_{os.getpid()}.json")
