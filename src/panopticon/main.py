@@ -477,6 +477,7 @@ def analyze_pmd_violations(pmd_output: str) -> str:
 3. Analyze and describe any recurring patterns or trends in the issues found, offering insights into common pitfalls or areas of weakness in the code.
 4. Offer specific, actionable recommendations for improvement, suggesting concrete steps to remediate identified issues and enhance code quality.
 5. Prioritize the issues in a logical order for addressing them, balancing urgency, impact, and effort required for resolution.
+6. Provide clear examples by including relevant code snippets and specifying the files where these quality issues originate.
 
 PMD output:
 {pmd_output}"""
