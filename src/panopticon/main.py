@@ -188,20 +188,44 @@ def run_gosec_scan(repo_path: str) -> Dict[str, Any]:
         if not go_files:
             return {"info": "No Go files found to scan"}
 
-        result = subprocess.run(
-            ["gosec", "-fmt=json", "-quiet", "./..."],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=repo_path
-        )
-        return json.loads(result.stdout)
+        # Create temporary file for output
+        output_file = os.path.join(tempfile.gettempdir(), f"gosec_output_{os.getpid()}.json")
+        
+        try:
+            # Run gosec with output to file
+            result = subprocess.run(
+                ["gosec", "-fmt=json", "-out", output_file, "-quiet", "./..."],
+                capture_output=True,
+                text=True,
+                check=False,  # Don't raise on non-zero exit codes
+                cwd=repo_path
+            )
+
+            # Check if output file exists and has content
+            if os.path.exists(output_file):
+                with open(output_file, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        try:
+                            return json.loads(content)
+                        except json.JSONDecodeError:
+                            return {"error": "Failed to parse Gosec JSON output"}
+                    else:
+                        return {"info": "No security issues found"}
+            else:
+                return {"error": "Gosec did not generate output file"}
+
+        finally:
+            # Clean up temporary file
+            if os.path.exists(output_file):
+                os.remove(output_file)
+
     except subprocess.CalledProcessError as e:
         return {"error": f"Gosec scan failed: {e.stderr}"}
-    except json.JSONDecodeError:
-        return {"error": "Failed to parse Gosec output"}
     except FileNotFoundError:
         return {"error": "Gosec not installed. Please install Gosec first."}
+    except Exception as e:
+        return {"error": f"Unexpected error during Gosec scan: {str(e)}"}
 
 @mcp.tool()
 def analyze_repository_structure(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None) -> str:
