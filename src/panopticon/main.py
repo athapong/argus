@@ -629,9 +629,14 @@ def analyze_code_quality(*,
             # Convert back to string with file contents
             result["raw_output"] = ET.tostring(violations, encoding='unicode')
             
-            messages = analyze_pmd_violations(result["raw_output"])
-            # return the text content from call_tools
-            return mcp.call_tool("analyze_pmd_violations", type="text", pmd_output=result["raw_output"])
+            # Get AI analysis of PMD results
+            ai_analysis = mcp.call_tool("analyze_pmd_violations", pmd_output=result["raw_output"])
+            
+            return {
+                "status": "success",
+                "pmd_results": result,
+                "analysis": ai_analysis
+            }
             
         else:
             return {
