@@ -18,6 +18,9 @@ import xml.etree.ElementTree as ET
 import platform
 import urllib.request
 import stat
+import magic  # for file type detection
+from collections import Counter
+import re
 
 def ensure_dependencies() -> None:
     """Ensure all required tools are installed."""
@@ -164,6 +167,32 @@ mcp = FastMCP(
     ],
     log_level="WARNING"  # Set log level to WARNING to disable INFO logs
 )
+
+LANGUAGE_PATTERNS = {
+    'go': {
+        'extensions': {'.go'},
+        'markers': {'package ', 'import (', 'func '},
+    },
+    'java': {
+        'extensions': {'.java', '.kt', '.scala'},
+        'markers': {'public class', 'package ', 'import java'},
+    },
+    'python': {
+        'extensions': {'.py', '.pyx', '.pyi'},
+        'markers': {'def ', 'class ', 'import ', 'from '},
+    },
+    'javascript': {
+        'extensions': {'.js', '.jsx', '.ts', '.tsx'},
+        'markers': {'function', 'const ', 'let ', 'import '},
+    }
+}
+
+ANALYSIS_TOOLS = {
+    'go': ['gocyclo', 'golangci-lint', 'trivy'],
+    'java': ['pmd', 'trivy'],
+    'python': ['pylint', 'bandit', 'trivy'],
+    'javascript': ['eslint', 'trivy']
+}
 
 def get_authenticated_url(repo_url: str, gitlab_credentials: Optional[GitLabCredentials] = None) -> str:
     """Convert repository URL to include authentication if credentials provided."""
@@ -372,6 +401,113 @@ def run_pmd_analysis(repo_path: str) -> Dict[str, Any]:
         return {"error": "PMD not installed. Please install PMD from https://pmd.github.io/"}
     except Exception as e:
         return {"error": f"Failed to run PMD: {str(e)}"}
+
+def detect_repository_languages(repo_path: str) -> Dict[str, float]:
+    """
+    Detect programming languages used in the repository.
+    Returns a dictionary of language -> confidence score (0-1).
+    """
+    file_count = Counter()
+    language_confidence = {}
+    total_files = 0
+
+    for root, _, files in os.walk(repo_path):
+        if '.git' in root:
+            continue
+            
+        for file in files:
+            file_path = os.path.join(root, file)
+            _, ext = os.path.splitext(file_path)
+            
+            # Skip files larger than 1MB
+            if os.path.getsize(file_path) > 1_000_000:
+                continue
+
+            # Check file extension
+            for lang, patterns in LANGUAGE_PATTERNS.items():
+                if ext in patterns['extensions']:
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read(1024)  # Read first 1KB
+                            marker_count = sum(1 for marker in patterns['markers'] 
+                                            if marker in content)
+                            if marker_count > 0:
+                                file_count[lang] += 1
+                                total_files += 1
+                    except:
+                        continue
+
+    # Calculate confidence scores
+    if total_files > 0:
+        for lang, count in file_count.items():
+            language_confidence[lang] = count / total_files
+
+    return language_confidence
+
+def get_analysis_tools(languages: Dict[str, float], min_confidence: float = 0.1) -> List[str]:
+    """Get appropriate analysis tools based on detected languages."""
+    selected_tools = set()
+    
+    for lang, confidence in languages.items():
+        if confidence >= min_confidence:
+            selected_tools.update(ANALYSIS_TOOLS.get(lang, []))
+    
+    return list(selected_tools)
+
+def run_language_specific_analysis(repo_path: str, language: str) -> Dict[str, Any]:
+    """Run language-specific analysis tools."""
+    results = {}
+    
+    if language == 'go':
+        results['gocyclo'] = run_gocyclo_analysis(repo_path)
+        # Add golangci-lint results here if implemented
+    elif language == 'java':
+        results['pmd'] = run_pmd_analysis(repo_path)
+    elif language == 'python':
+        # Implement Python-specific analysis
+        results['pylint'] = run_pylint_analysis(repo_path)
+        results['bandit'] = run_bandit_analysis(repo_path)
+    elif language == 'javascript':
+        # Implement JavaScript-specific analysis
+        results['eslint'] = run_eslint_analysis(repo_path)
+    
+    return results
+
+def run_pylint_analysis(repo_path: str) -> Dict[str, Any]:
+    """Run Pylint analysis on Python code."""
+    try:
+        result = subprocess.run(
+            ["pylint", "--output-format=json", repo_path],
+            capture_output=True,
+            text=True
+        )
+        return json.loads(result.stdout) if result.stdout else {"error": "No output from pylint"}
+    except Exception as e:
+        return {"error": f"Pylint analysis failed: {str(e)}"}
+
+def run_bandit_analysis(repo_path: str) -> Dict[str, Any]:
+    """Run Bandit security analysis on Python code."""
+    try:
+        result = subprocess.run(
+            ["bandit", "-r", "-f", "json", repo_path],
+            capture_output=True,
+            text=True
+        )
+        return json.loads(result.stdout) if result.stdout else {"error": "No output from bandit"}
+    except Exception as e:
+        return {"error": f"Bandit analysis failed: {str(e)}"}
+
+def run_eslint_analysis(repo_path: str) -> Dict[str, Any]:
+    """Run ESLint analysis on JavaScript/TypeScript code."""
+    try:
+        result = subprocess.run(
+            ["eslint", "-f", "json", repo_path],
+            capture_output=True,
+            text=True
+        )
+        return json.loads(result.stdout) if result.stdout else {"error": "No output from eslint"}
+    except Exception as e:
+        return {"error": f"ESLint analysis failed: {str(e)}"}
 
 @mcp.tool()
 def analyze_repository_structure(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None, branch: Optional[str] = None) -> str:
@@ -582,70 +718,67 @@ PMD output:
 {pmd_output}"""
 
 @mcp.tool()
-def analyze_code_quality(*, 
+def analyze_code_quality(*,
     repo_url: str,
-    language: str,
+    language: Optional[str] = None,
     gitlab_credentials: Optional[Union[str, dict]] = None,
     branch: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Analyze code quality and provide AI-generated summary.
+    Analyze code quality with automatic language detection and tool selection.
     
     Args:
         repo_url: Repository URL
-        language: Programming language ("go" or "java")
+        language: Optional language override
         gitlab_credentials: Optional GitLab credentials
         branch: Optional branch name to clone
         
     Returns:
-        Dictionary containing analysis results and AI summary
+        Dictionary containing analysis results for detected languages
     """
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
         repo_path = clone_repo(repo_url, creds, branch)
         
-        if language.lower() == "go":
-            return {
-                "status": "success",
-                "metrics": run_gocyclo_analysis(repo_path)
-            }
-        elif language.lower() == "java":
-            result = run_pmd_analysis(repo_path)
-            if "error" in result:
-                return {"status": "error", "error": result["error"]}
-            
-            # For each violation, try to read the actual file content
-            violations = ET.fromstring(result["raw_output"])
-            for file_elem in violations.findall(".//file"):
-                file_path = file_elem.get("name")
-                try:
-                    with open(file_path, 'r') as f:
-                        content = f.read()
-                        # Add file content to XML
-                        file_elem.set("content", content)
-                except:
-                    pass
-            
-            # Convert back to string with file contents
-            result["raw_output"] = ET.tostring(violations, encoding='unicode')
-            
-            # Get AI analysis of PMD results - fixed to use positional argument
-            ai_analysis = mcp.call_tool("analyze_pmd_violations", result["raw_output"])
-            
-            return {
-                "status": "success",
-                "pmd_results": result,
-                "analysis": ai_analysis
-            }
-            
+        # Detect languages if not specified
+        if not language:
+            detected_languages = detect_repository_languages(repo_path)
+            if not detected_languages:
+                return {
+                    "status": "error",
+                    "error": "No supported programming languages detected"
+                }
         else:
+            detected_languages = {language.lower(): 1.0}
+        
+        # Get appropriate analysis tools
+        tools = get_analysis_tools(detected_languages)
+        if not tools:
             return {
                 "status": "error",
-                "error": f"Unsupported language: {language}. Supported languages: go, java"
+                "error": "No suitable analysis tools found for detected languages"
             }
+        
+        # Run analysis for each detected language
+        results = {
+            "status": "success",
+            "languages": detected_languages,
+            "analysis": {}
+        }
+        
+        for lang, confidence in detected_languages.items():
+            if confidence >= 0.1:  # Only analyze if confidence is above 10%
+                results["analysis"][lang] = run_language_specific_analysis(repo_path, lang)
+        
+        # Always run Trivy for security scanning
+        results["security_scan"] = run_trivy_scan(repo_path)
+        
+        return results
             
     except Exception as e:
         return {
             "status": "error",
             "error": f"Code quality analysis failed: {str(e)}"
         }
+
+# ...rest of the existing code...
