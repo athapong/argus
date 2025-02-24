@@ -18,13 +18,38 @@ import xml.etree.ElementTree as ET
 import platform
 import urllib.request
 import stat
-import magic  # for file type detection
 from collections import Counter
 import re
 
+def ensure_system_dependencies() -> None:
+    """Ensure system-level dependencies are installed."""
+    system = platform.system().lower()
+    if system == "darwin":
+        try:
+            subprocess.run(["brew", "--version"], check=True, capture_output=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise Exception("Homebrew is required. Please install from https://brew.sh")
+        
+        # Install libmagic using homebrew
+        try:
+            subprocess.run(["brew", "list", "libmagic"], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            subprocess.run(["brew", "install", "libmagic"], check=True)
+    
+    elif system == "linux":
+        try:
+            # Install libmagic on Linux
+            subprocess.run(["sudo", "apt-get", "update"], check=True)
+            subprocess.run(["sudo", "apt-get", "install", "-y", "libmagic1"], check=True)
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"Failed to install libmagic: {str(e)}")
+
 def ensure_dependencies() -> None:
     """Ensure all required tools are installed."""
-    # Check and install PMD
+    # First ensure system dependencies
+    ensure_system_dependencies()
+    
+    # Then check and install PMD
     if not is_pmd_installed():
         install_pmd()
     
@@ -163,8 +188,9 @@ mcp = FastMCP(
     dependencies=[
         "GitPython",
         "gitdb",
-        "trivy",  # Only keep Trivy dependency
-        "python-magic",  # Add magic for file type detection
+        "trivy",
+        "python-magic-bin; platform_system == 'Windows'",  # Use binary distribution on Windows
+        "python-magic; platform_system != 'Windows'",      # Use regular package elsewhere
     ],
     log_level="WARNING"  # Set log level to WARNING to disable INFO logs
 )
