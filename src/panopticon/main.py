@@ -164,6 +164,7 @@ mcp = FastMCP(
         "GitPython",
         "gitdb",
         "trivy",  # Only keep Trivy dependency
+        "python-magic",  # Add magic for file type detection
     ],
     log_level="WARNING"  # Set log level to WARNING to disable INFO logs
 )
