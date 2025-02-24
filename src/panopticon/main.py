@@ -20,59 +20,60 @@ import urllib.request
 import stat
 from collections import Counter
 import re
+from datetime import datetime
 
-def is_libmagic_installed() -> bool:
-    """Check if libmagic is installed by trying to use it."""
-    try:
-        import magic
-        magic.Magic()
-        return True
-    except:
-        return False
+# def is_libmagic_installed() -> bool:
+#     """Check if libmagic is installed by trying to use it."""
+#     try:
+#         import magic
+#         magic.Magic()
+#         return True
+#     except:
+#         return False
 
-def ensure_system_dependencies() -> None:
-    """Ensure system-level dependencies are installed."""
-    # Skip if SKIP_SYSTEM_CHECK environment variable is set
-    if os.environ.get("SKIP_SYSTEM_CHECK"):
-        return
+# def ensure_system_dependencies() -> None:
+#     """Ensure system-level dependencies are installed."""
+#     # Skip if SKIP_SYSTEM_CHECK environment variable is set
+#     if os.environ.get("SKIP_SYSTEM_CHECK"):
+#         return
 
-    # Skip if libmagic is already working
-    if is_libmagic_installed():
-        return
+#     # Skip if libmagic is already working
+#     if is_libmagic_installed():
+#         return
         
-    system = platform.system().lower()
-    if system == "darwin":
-        try:
-            # Check if Homebrew exists but don't raise error if it doesn't
-            homebrew_exists = subprocess.run(
-                ["which", "brew"], 
-                capture_output=True
-            ).returncode == 0
+#     system = platform.system().lower()
+#     if system == "darwin":
+#         try:
+#             # Check if Homebrew exists but don't raise error if it doesn't
+#             homebrew_exists = subprocess.run(
+#                 ["which", "brew"], 
+#                 capture_output=True
+#             ).returncode == 0
             
-            if homebrew_exists:
-                # Only try to install libmagic if Homebrew is available
-                try:
-                    subprocess.run(["brew", "list", "libmagic"], check=True, capture_output=True)
-                except subprocess.CalledProcessError:
-                    subprocess.run(["brew", "install", "libmagic"], check=True)
-            else:
-                print("WARNING: Homebrew not found. Please install libmagic manually if needed.")
+#             if homebrew_exists:
+#                 # Only try to install libmagic if Homebrew is available
+#                 try:
+#                     subprocess.run(["brew", "list", "libmagic"], check=True, capture_output=True)
+#                 except subprocess.CalledProcessError:
+#                     subprocess.run(["brew", "install", "libmagic"], check=True)
+#             else:
+#                 print("WARNING: Homebrew not found. Please install libmagic manually if needed.")
                 
-        except Exception as e:
-            print(f"WARNING: Could not install libmagic: {str(e)}")
+#         except Exception as e:
+#             print(f"WARNING: Could not install libmagic: {str(e)}")
     
-    elif system == "linux":
-        try:
-            subprocess.run(["sudo", "apt-get", "update"], check=True)
-            subprocess.run(["sudo", "apt-get", "install", "-y", "libmagic1"], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"WARNING: Could not install libmagic: {str(e)}")
-            print("Please install libmagic manually if needed.")
+#     elif system == "linux":
+#         try:
+#             subprocess.run(["sudo", "apt-get", "update"], check=True)
+#             subprocess.run(["sudo", "apt-get", "install", "-y", "libmagic1"], check=True)
+#         except subprocess.CalledProcessError as e:
+#             print(f"WARNING: Could not install libmagic: {str(e)}")
+#             print("Please install libmagic manually if needed.")
 
 def ensure_dependencies() -> None:
     """Ensure all required tools are installed."""
     # First ensure system dependencies
-    ensure_system_dependencies()
+    # ensure_system_dependencies()
     
     # Then check and install PMD
     if not is_pmd_installed():
@@ -208,18 +209,22 @@ class CodeQualityInput(BaseModel):
     gitlab_credentials: Optional[GitLabCredentials] = None
     branch: Optional[str] = None
 
+class TeamsWebhookConfig(BaseModel):
+    """Microsoft Teams webhook configuration."""
+    url: str
+    channel: Optional[str] = None
+    mention_users: Optional[List[str]] = None
+
 mcp = FastMCP(
     "Repository Tools",
     dependencies=[
         "GitPython",
         "gitdb",
-        "trivy",
-        "python-magic-bin; platform_system == 'Windows'",  # Use binary distribution on Windows
-        "python-magic; platform_system != 'Windows'",      # Use regular package elsewhere
-        "pylint",       # Add Python analysis tools
+        "requests",
+        "pylint",
         "bandit",
     ],
-    log_level="WARNING"  # Set log level to WARNING to disable INFO logs
+    log_level="WARNING"
 )
 
 LANGUAGE_PATTERNS = {
@@ -256,10 +261,8 @@ def get_authenticated_url(repo_url: str, gitlab_credentials: Optional[GitLabCred
     # Handle GitLab URLs
     if "gitlab.com" in repo_url:
         if repo_url.startswith("https://"):
-            # Convert https://gitlab.com/user/repo to https://oauth2:token@gitlab.com/user/repo
             return repo_url.replace("https://", f"https://oauth2:{gitlab_credentials.api_key}@")
         elif repo_url.startswith("git@"):
-            # Convert git@gitlab.com:user/repo to https://oauth2:token@gitlab.com/user/repo
             return repo_url.replace("git@gitlab.com:", f"https://oauth2:{gitlab_credentials.api_key}@gitlab.com/")
     
     return repo_url
@@ -563,6 +566,18 @@ def run_eslint_analysis(repo_path: str) -> Dict[str, Any]:
     except Exception as e:
         return {"error": f"ESLint analysis failed: {str(e)}"}
 
+def format_trivy_results(scan_results: Dict[str, Any]) -> Dict[str, Any]:
+    """Format Trivy scan results for Teams message."""
+    vulnerabilities = scan_results.get("vulnerabilities", [])
+    
+    return {
+        "Total Vulnerabilities": len(vulnerabilities),
+        "Critical": sum(1 for v in vulnerabilities if v.get("severity") == "CRITICAL"),
+        "High": sum(1 for v in vulnerabilities if v.get("severity") == "HIGH"),
+        "Medium": sum(1 for v in vulnerabilities if v.get("severity") == "MEDIUM"),
+        "Low": sum(1 for v in vulnerabilities if v.get("severity") == "LOW")
+    }
+
 @mcp.tool()
 def analyze_repository_structure(*, repo_url: str, gitlab_credentials: Optional[Union[str, dict]] = None, branch: Optional[str] = None) -> str:
     """
@@ -697,18 +712,7 @@ def security_scan_repository(*,
     gitlab_credentials: Optional[Union[str, dict]] = None,
     branch: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    Perform security scanning on a repository using Trivy.
-    
-    Args:
-        repo_url: Repository URL to scan
-        scan_type: Type of scan to perform (only "trivy" supported)
-        gitlab_credentials: Optional GitLab credentials
-        branch: Optional branch name to clone
-        
-    Returns:
-        Dictionary containing scan results or errors
-    """
+    """Perform security scanning on a repository using Trivy."""
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
         repo_path = clone_repo(repo_url, creds, branch)
@@ -716,7 +720,12 @@ def security_scan_repository(*,
         if scan_type != "trivy":
             return {"error": "Only Trivy scanning is supported"}
             
-        return {"trivy_scan": run_trivy_scan(repo_path)}
+        scan_results = run_trivy_scan(repo_path)
+        return {
+            "trivy_scan": scan_results,
+            "summary": format_trivy_results(scan_results)
+        }
+            
     except Exception as e:
         return {"error": f"Security scan failed: {str(e)}"}
 
@@ -788,7 +797,7 @@ def analyze_code_quality(*,
         branch: Optional branch name to clone
         
     Returns:
-        Dictionary containing analysis results for detected languages
+        Dictionary containing analysis results
     """
     try:
         creds = create_gitlab_credentials(gitlab_credentials)
@@ -834,5 +843,3 @@ def analyze_code_quality(*,
             "status": "error",
             "error": f"Code quality analysis failed: {str(e)}"
         }
-
-# ...rest of the existing code...

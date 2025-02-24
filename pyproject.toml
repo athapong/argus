@@ -1,6 +1,6 @@
 [project]
 name = "argus"
-version = "0.1.0"
+version = "0.1.1"
 description = "Argus: GitLab Repository Analysis and Security Tools"
 authors = [
     {name = "Athapong Kaewsalapoom", email = "athapong.k@gmail.com"},
