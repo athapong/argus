@@ -15,6 +15,106 @@ from git import Repo, GitCommandError
 import json
 from enum import Enum
 import xml.etree.ElementTree as ET
+import platform
+import urllib.request
+import stat
+
+def ensure_dependencies() -> None:
+    """Ensure all required tools are installed."""
+    # Check and install PMD
+    if not is_pmd_installed():
+        install_pmd()
+    
+    # Check and install Trivy
+    if not is_trivy_installed():
+        install_trivy()
+
+def is_pmd_installed() -> bool:
+    """Check if PMD is installed."""
+    try:
+        subprocess.run(["pmd", "--version"], capture_output=True)
+        return True
+    except FileNotFoundError:
+        return False
+
+def is_trivy_installed() -> bool:
+    """Check if Trivy is installed."""
+    try:
+        subprocess.run(["trivy", "--version"], capture_output=True)
+        return True
+    except FileNotFoundError:
+        return False
+
+def install_pmd() -> None:
+    """Install PMD."""
+    system = platform.system().lower()
+    if system == "darwin":  # macOS
+        subprocess.run(["brew", "install", "pmd"], check=True)
+    elif system == "linux":
+        # Download and install PMD
+        pmd_version = "7.0.0-rc4"
+        pmd_url = f"https://github.com/pmd/pmd/releases/download/pmd_releases/{pmd_version}/pmd-bin-{pmd_version}.zip"
+        install_dir = os.path.expanduser("~/.local/bin")
+        
+        # Create install directory if it doesn't exist
+        os.makedirs(install_dir, exist_ok=True)
+        
+        # Download and extract PMD
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
+            urllib.request.urlretrieve(pmd_url, tmp_file.name)
+            with zipfile.ZipFile(tmp_file.name, 'r') as zip_ref:
+                zip_ref.extractall(install_dir)
+        
+        # Create symlink to PMD script
+        pmd_script = os.path.join(install_dir, f"pmd-bin-{pmd_version}/bin/pmd")
+        pmd_link = os.path.join(install_dir, "pmd")
+        os.chmod(pmd_script, os.stat(pmd_script).st_mode | stat.S_IEXEC)
+        if os.path.exists(pmd_link):
+            os.remove(pmd_link)
+        os.symlink(pmd_script, pmd_link)
+        
+        # Add to PATH if not already there
+        if install_dir not in os.environ['PATH']:
+            with open(os.path.expanduser("~/.bashrc"), "a") as bashrc:
+                bashrc.write(f'\nexport PATH="{install_dir}:$PATH"\n')
+    else:
+        raise Exception(f"Unsupported operating system: {system}")
+
+def install_trivy() -> None:
+    """Install Trivy."""
+    system = platform.system().lower()
+    if system == "darwin":  # macOS
+        subprocess.run(["brew", "install", "aquasecurity/trivy/trivy"], check=True)
+    elif system == "linux":
+        # Add Trivy repository and install
+        subprocess.run([
+            "sudo", "apt-get", "install", "wget", "apt-transport-https", "gnupg", "lsb-release"
+        ], check=True)
+        
+        # Download and add Trivy GPG key
+        subprocess.run([
+            "wget", "-qO", "-", 
+            "https://aquasecurity.github.io/trivy-repo/deb/public.key", 
+            "|", "gpg", "--dearmor", "|",
+            "sudo", "tee", "/usr/share/keyrings/trivy.gpg", ">", "/dev/null"
+        ], check=True, shell=True)
+        
+        # Add Trivy repository
+        subprocess.run([
+            "echo", "deb [signed-by=/usr/share/keyrings/trivy.gpg]",
+            "https://aquasecurity.github.io/trivy-repo/deb",
+            "$(lsb_release -sc)", "main",
+            "|", "sudo", "tee", "/etc/apt/sources.list.d/trivy.list"
+        ], check=True, shell=True)
+        
+        # Update and install Trivy
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+        subprocess.run(["sudo", "apt-get", "install", "trivy", "-y"], check=True)
+    else:
+        raise Exception(f"Unsupported operating system: {system}")
+
+# Initialize dependencies when module loads
+ensure_dependencies()
 
 # Input schemas
 class GitLabCredentials(BaseModel):
