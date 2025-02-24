@@ -21,28 +21,53 @@ import stat
 from collections import Counter
 import re
 
+def is_libmagic_installed() -> bool:
+    """Check if libmagic is installed by trying to use it."""
+    try:
+        import magic
+        magic.Magic()
+        return True
+    except:
+        return False
+
 def ensure_system_dependencies() -> None:
     """Ensure system-level dependencies are installed."""
+    # Skip if SKIP_SYSTEM_CHECK environment variable is set
+    if os.environ.get("SKIP_SYSTEM_CHECK"):
+        return
+
+    # Skip if libmagic is already working
+    if is_libmagic_installed():
+        return
+        
     system = platform.system().lower()
     if system == "darwin":
         try:
-            subprocess.run(["brew", "--version"], check=True, capture_output=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            raise Exception("Homebrew is required. Please install from https://brew.sh")
-        
-        # Install libmagic using homebrew
-        try:
-            subprocess.run(["brew", "list", "libmagic"], check=True, capture_output=True)
-        except subprocess.CalledProcessError:
-            subprocess.run(["brew", "install", "libmagic"], check=True)
+            # Check if Homebrew exists but don't raise error if it doesn't
+            homebrew_exists = subprocess.run(
+                ["which", "brew"], 
+                capture_output=True
+            ).returncode == 0
+            
+            if homebrew_exists:
+                # Only try to install libmagic if Homebrew is available
+                try:
+                    subprocess.run(["brew", "list", "libmagic"], check=True, capture_output=True)
+                except subprocess.CalledProcessError:
+                    subprocess.run(["brew", "install", "libmagic"], check=True)
+            else:
+                print("WARNING: Homebrew not found. Please install libmagic manually if needed.")
+                
+        except Exception as e:
+            print(f"WARNING: Could not install libmagic: {str(e)}")
     
     elif system == "linux":
         try:
-            # Install libmagic on Linux
             subprocess.run(["sudo", "apt-get", "update"], check=True)
             subprocess.run(["sudo", "apt-get", "install", "-y", "libmagic1"], check=True)
         except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to install libmagic: {str(e)}")
+            print(f"WARNING: Could not install libmagic: {str(e)}")
+            print("Please install libmagic manually if needed.")
 
 def ensure_dependencies() -> None:
     """Ensure all required tools are installed."""
@@ -191,6 +216,8 @@ mcp = FastMCP(
         "trivy",
         "python-magic-bin; platform_system == 'Windows'",  # Use binary distribution on Windows
         "python-magic; platform_system != 'Windows'",      # Use regular package elsewhere
+        "pylint",       # Add Python analysis tools
+        "bandit",
     ],
     log_level="WARNING"  # Set log level to WARNING to disable INFO logs
 )
